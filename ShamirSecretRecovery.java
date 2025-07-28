@@ -7,101 +7,87 @@ import com.google.gson.*;
 public class ShamirSecretRecovery {
 
     public static void main(String[] args) throws Exception {
-        // Load JSON from files (Assuming files test1.json and test2.json)
-        String json1 = new String(Files.readAllBytes(Paths.get("test1.json")));
-        String json2 = new String(Files.readAllBytes(Paths.get("test2.json")));
+        // Load input from local JSON files
+        String jsonData1 = Files.readString(Paths.get("test1.json"));
+        String jsonData2 = Files.readString(Paths.get("test2.json"));
 
-        BigInteger secret1 = findSecretFromJson(json1);
-        BigInteger secret2 = findSecretFromJson(json2);
+        // Recover secrets from both shares
+        BigInteger recovered1 = recoverSecretFromJson(jsonData1);
+        BigInteger recovered2 = recoverSecretFromJson(jsonData2);
 
-        // Print both secrets simultaneously
-        System.out.println("Secret 1: " + secret1);
-        System.out.println("Secret 2: " + secret2);
+        System.out.println("Secret 1: " + recovered1);
+        System.out.println("Secret 2: " + recovered2);
     }
 
-    private static BigInteger findSecretFromJson(String jsonStr) {
-        JsonObject root = JsonParser.parseString(jsonStr).getAsJsonObject();
+    private static BigInteger recoverSecretFromJson(String jsonContent) {
+        JsonObject json = JsonParser.parseString(jsonContent).getAsJsonObject();
+        JsonObject meta = json.getAsJsonObject("keys");
 
-        JsonObject keys = root.getAsJsonObject("keys");
-        int n = keys.get("n").getAsInt();
-        int k = keys.get("k").getAsInt();  // minimal points required = degree + 1
+        int totalParts = meta.get("n").getAsInt();
+        int threshold = meta.get("k").getAsInt(); // min parts needed to recover
 
-        // Extract and decode points
-        // Each key except "keys" is an x value as string, with base and value field
-        List<Point> points = new ArrayList<>();
-        for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
+        List<SharePoint> dataPoints = new ArrayList<>();
+
+        for (Map.Entry<String, JsonElement> entry : json.entrySet()) {
             String key = entry.getKey();
             if (key.equals("keys")) continue;
-            int x = Integer.parseInt(key);
 
-            JsonObject valObj = entry.getValue().getAsJsonObject();
-            int base = Integer.parseInt(valObj.get("base").getAsString());
-            String valStr = valObj.get("value").getAsString();
+            int xCoord = Integer.parseInt(key);
+            JsonObject obj = entry.getValue().getAsJsonObject();
+            int base = Integer.parseInt(obj.get("base").getAsString());
+            String encoded = obj.get("value").getAsString();
 
-            BigInteger y = decodeValue(valStr, base);
-            points.add(new Point(BigInteger.valueOf(x), y));
+            // Decode the Y value using given base
+            BigInteger yVal = decode(encoded, base);
+            dataPoints.add(new SharePoint(BigInteger.valueOf(xCoord), yVal));
         }
 
-        // We only need k points
-        if (points.size() < k) {
-            throw new RuntimeException("Insufficient points for interpolation");
+        if (dataPoints.size() < threshold) {
+            throw new IllegalStateException("Not enough points to reconstruct secret.");
         }
 
-        // Pick first k points (could use any k points since polynomial is unique)
-        List<Point> selectedPoints = points.subList(0, k);
-
-        // Compute f(0) by Lagrange interpolation
-        return lagrangeInterpolationAtZero(selectedPoints);
+        // Select first k points (could randomize for more realism)
+        List<SharePoint> selected = dataPoints.subList(0, threshold);
+        return interpolateAtZero(selected);
     }
 
-    // Decode given value string in given base to BigInteger
-    // Base can be up to 16 (hex) or even 15 (alphanumeric) according to problem example,
-    // so we handle digits and alphabets for bases >10.
-    private static BigInteger decodeValue(String valStr, int base) {
-        // The value string is a number in the given base
-        // Java's BigInteger has constructor: BigInteger(String val, int radix)
-        // But if bases > 10 and characters are alphabets, they have to be lowercase hex (a-f) for base 15 or 16
-        valStr = valStr.toLowerCase(Locale.ROOT);
-        return new BigInteger(valStr, base);
+    private static BigInteger decode(String value, int base) {
+        // Lowercase needed for bases > 10 (a-f)
+        return new BigInteger(value.toLowerCase(Locale.ROOT), base);
     }
 
-    // Calculate f(0) using Lagrange Interpolation with BigInteger arithmetic
-    private static BigInteger lagrangeInterpolationAtZero(List<Point> points) {
-        BigInteger result = BigInteger.ZERO;
+    private static BigInteger interpolateAtZero(List<SharePoint> points) {
+        BigInteger sum = BigInteger.ZERO;
 
-        int k = points.size();
-
-        for (int i = 0; i < k; i++) {
+        for (int i = 0; i < points.size(); i++) {
             BigInteger xi = points.get(i).x;
             BigInteger yi = points.get(i).y;
 
-            BigInteger numerator = BigInteger.ONE;    // product over (0 - xj)
-            BigInteger denominator = BigInteger.ONE;  // product over (xi - xj)
+            BigInteger num = BigInteger.ONE;
+            BigInteger den = BigInteger.ONE;
 
-            for (int j = 0; j < k; j++) {
-                if (j == i) continue;
+            for (int j = 0; j < points.size(); j++) {
+                if (i == j) continue;
+
                 BigInteger xj = points.get(j).x;
 
-                numerator = numerator.multiply(xj.negate()); // 0 - xj = -xj
-                denominator = denominator.multiply(xi.subtract(xj));
+                num = num.multiply(xj.negate());          // 0 - xj = -xj
+                den = den.multiply(xi.subtract(xj));      // xi - xj
             }
 
-            // fraction = numerator/denominator
-            // multiply by yi
-            // Since no modulus, do exact division with BigInteger
-            // denominator divides numerator at the end because polynomial interpolation guarantees it
-
-            BigInteger term = yi.multiply(numerator).divide(denominator);
-
-            result = result.add(term);
+            // Using exact division since it's guaranteed
+            BigInteger term = yi.multiply(num).divide(den);
+            sum = sum.add(term);
         }
-        return result;
+
+        return sum;
     }
 
-    static class Point {
+    // Just a container for x and y values
+    static class SharePoint {
         BigInteger x, y;
 
-        Point(BigInteger x, BigInteger y) {
+        SharePoint(BigInteger x, BigInteger y) {
             this.x = x;
             this.y = y;
         }
